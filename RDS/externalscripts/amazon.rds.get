@@ -1,0 +1,80 @@
+#!/usr/bin/php
+<?php
+require_once('sdk.class.php');
+
+#$args = print_r($argv, true);
+#debug_log($args);
+
+$items = array(
+  array(
+    'key'         => 'amazon.rds.cpu.util',
+    'metric_name' => 'CPUUtilization',
+    'unit'        => 'Percent',
+  ),
+  array(
+    'key'         => 'amazon.rds.conn',
+    'metric_name' => 'DatabaseConnections',
+    'unit'        => 'Count',
+  ),
+  array(
+    'key'         => 'amazon.rds.disk.free',
+    'metric_name' => 'FreeStorageSpace',
+    'unit'        => 'Bytes',
+  ),
+);
+
+$dbname     = $argv[2];
+$region     = $argv[3];
+
+$namespace  = 'AWS/RDS';
+$statistics = array('Average', 'Maximum', 'SampleCount');
+$unit       = 'Percent';
+
+$period = 5 * 60;
+# 値の格納に2,3分ほどタイムラグがあるので5分前の値を取る
+$start  = date('c', strtotime("-". (300 + $period). " second"));
+$end    = date('c', strtotime("-300 second"));
+
+$cw = new AmazonCloudWatch();
+$cw->set_region($region);
+
+$opt = array(
+  'Dimensions' => array(
+    array('Name' => 'DBInstanceIdentifier', 'Value' => $dbname)
+  ),
+);
+
+foreach($items as $item){
+  $res = $cw->get_metric_statistics($namespace, $item['metric_name'],
+                                    $start, $end, $period,
+                                    $statistics, $item['unit'], $opt);
+  if(! $res->isOK()){
+    echo 1;
+    exit(1);
+  }
+  $data = $res->body->GetMetricStatisticsResult->Datapoints->member;
+  $data = $data[0];
+  zabbix_sender($dbname, "{$item['key']}.avg", (float)$data->Average);
+  zabbix_sender($dbname, "{$item['key']}.max", (float)$data->Maximum);
+}
+
+echo "0";
+exit(0);
+
+### end of main
+
+function zabbix_sender($host, $key, $val){
+  $zabbix_sender = "/usr/bin/zabbix_sender -z 127.0.0.1 >/dev/null ";
+  $cmd = "$zabbix_sender -s $host -k $key -o $val";
+#サニタイズすると>/dev/nullが効かなくなるからあとで対応
+#  $cmd = escapeshellcmd($cmd);
+  exec($cmd);
+  debug_log($cmd);
+}
+
+function debug_log($msg) {
+  $debug_log = "/tmp/zabbix.log";
+
+  $msg = date("Y/m/d H:i:s") ." ". $msg ."\n";
+  file_put_contents($debug_log, $msg, FILE_APPEND);
+}
